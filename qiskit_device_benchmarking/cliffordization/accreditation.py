@@ -111,6 +111,15 @@ class Accreditation:
         pm = PassManager([ConvertCircuitToTrap()])
         trap_template = pm.run(self.target_circuit)
 
+        # Get a list of the active qubits
+        active_qb_indices = []
+        qargs_map = {q: i for i, q in enumerate(trap_template.qubits)}
+        for instr in trap_template.data:
+            if instr.name != "barrier":
+                for qubit in instr.qubits:
+                    active_qb_indices.append(qargs_map[qubit])
+        active_qb_indices = set(active_qb_indices)
+
         # Initialize lists to store the observables and the parameter set
         observables = []
         params_set = []
@@ -130,8 +139,11 @@ class Accreditation:
                     inplace=True,
                 )
 
-            # Generate an n-qubit Pauli-Z by sampling I with prob. 1/4 and Z with prob. 3/4
-            z = choices([True, False], [0.75, 0.25], k=trap.num_qubits)
+            # Generate an n-qubit Pauli-Z by sampling I with prob. 1/4 and Z with prob. 3/4 for the active
+            # qubits
+            z = []
+            for idx in range(trap.num_qubits):
+                z.append(choices([True, False], [0.75, 0.25])[0] if idx in active_qb_indices else False)
             pauli_in = Pauli((z, [False] * trap.num_qubits, [0] * trap.num_qubits))
 
             # Evolve ``Pauli_in`` to get the output observable
