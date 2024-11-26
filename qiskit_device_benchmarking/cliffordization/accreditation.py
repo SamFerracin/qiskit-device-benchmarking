@@ -1,4 +1,3 @@
-import numpy as np
 from random import choices
 import concurrent.futures
 
@@ -175,7 +174,9 @@ class Accreditation:
             ]
 
             # Collect the results
-            results = [future.result() for future in concurrent.futures.as_completed(futures)]
+            results = [
+                future.result() for future in concurrent.futures.as_completed(futures)
+            ]
 
         observables = [r[0] for r in results]
         params_set = [r[1] for r in results]
