@@ -14,7 +14,8 @@ Classes and functions to run accreditation.
 P.S. "Accreditation" is a really ugly name. Can we change it? :p
 """
 
-# The u3 angles for all the 24 one-qubit gate Clifford gates
+# The u3 angles for all the 24 one-qubit gate Clifford gates, given as
+# ``lam``, ``theta``, and ``phi``
 CLIFFORD_U3_ANGLES = [
     [0.0, 3.141592653589793, 3.141592653589793],
     [3.141592653589793, 3.141592653589793, 3.141592653589793],
@@ -111,7 +112,10 @@ class Accreditation:
         pm = PassManager([ConvertCircuitToTrap()])
         trap_template = pm.run(self.target_circuit)
 
-        # Get a list of the active qubits
+        # Store the name of the parameters in the template circuit 
+        param_names = [p.name for p in trap_template.parameters]
+
+        # Generate a list of the active qubits
         active_qb_indices = []
         qargs_map = {q: i for i, q in enumerate(trap_template.qubits)}
         for instr in trap_template.data:
@@ -130,14 +134,11 @@ class Accreditation:
             trap = trap_template.copy()
 
             # Choose a triplet of U3 angles for every parametric and assign the parameters
-            chosen_u3_cliff_angles = choices(
-                CLIFFORD_U3_ANGLES, k=trap.num_parameters // 3
-            )
-            for idx, (theta, phi, lam) in enumerate(chosen_u3_cliff_angles):
-                trap.assign_parameters(
-                    {f"p_{idx}[0]": theta, f"p_{idx}[1]": phi, f"p_{idx}[2]": lam},
-                    inplace=True,
-                )
+            angles = choices(CLIFFORD_U3_ANGLES, k=trap.num_parameters // 3)
+            bindings = {}
+            for idx, (lam, theta, phi) in angles:
+                bindings.update({f"p_{idx}[0]": theta, f"p_{idx}[1]": phi, f"p_{idx}[2]": lam})
+            trap.assign_parameters(bindings, inplace=True)
 
             # Generate an n-qubit Pauli-Z by sampling I with prob. 1/4 and Z with prob. 3/4 for the active
             # qubits
@@ -146,12 +147,12 @@ class Accreditation:
                 z.append(choices([True, False], [0.75, 0.25])[0] if idx in active_qb_indices else False)
             pauli_in = Pauli((z, [False] * trap.num_qubits, [0] * trap.num_qubits))
 
-            # Evolve ``Pauli_in`` to get the output observable
+            # Evolve ``Pauli_in`` in the Schrödinger framework to get the output observable
             obs = pauli_in.evolve(Clifford(trap), frame="s")
 
-            params_set.append(list(np.array(chosen_u3_cliff_angles).flatten()))
+            # Update parameters and observables
+            params_set.append([bindings[k] for k in param_names])
             observables.append(obs)
 
-        # Return the template trap, the whole set of observables, and the whole set of parameters.
-        # When running an estimator, this will send down (and compile) a single circuit.
+        # Return the template trap, the whole set of observables, and the whole set of parameters
         return trap_template, observables, params_set
