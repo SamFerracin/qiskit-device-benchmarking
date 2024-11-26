@@ -1,6 +1,6 @@
 import numpy as np
-from random import choices, sample
-
+from random import choices
+import concurrent.futures
 
 from qiskit.circuit import QuantumCircuit, ParameterVector
 from qiskit.converters import circuit_to_dag
@@ -88,6 +88,44 @@ class Accreditation:
         r"""The target circuit for this accreditation run."""
         return self._target_circuit
 
+    def _make_obs_and_array(
+        self,
+        trap_template: QuantumCircuit,
+        param_names: list[str],
+        active_qb_indices: list[int],
+    ) -> tuple[Pauli, list[float]]:
+        r"""
+        Returns a single pair ``(obs, params_set)``.
+        """
+        # Create a copy of the template
+        trap = trap_template.copy()
+
+        # Choose a triplet of U3 angles for every parametric and assign the parameters
+        angles = choices(CLIFFORD_U3_ANGLES, k=trap.num_parameters // 3)
+        bindings = {}
+        for idx, (lam, theta, phi) in enumerate(angles):
+            bindings.update(
+                {f"p_{idx}[0]": theta, f"p_{idx}[1]": phi, f"p_{idx}[2]": lam}
+            )
+        trap.assign_parameters(bindings, inplace=True)
+
+        # Generate an n-qubit Pauli-Z by sampling I with prob. 1/4 and Z with prob. 3/4 for the active
+        # qubits
+        z = []
+        for idx in range(trap.num_qubits):
+            z.append(
+                choices([True, False], [0.75, 0.25])[0]
+                if idx in active_qb_indices
+                else False
+            )
+        pauli_in = Pauli((z, [False] * trap.num_qubits, [0] * trap.num_qubits))
+
+        # Evolve ``Pauli_in`` in the Schrödinger framework to get the output observable
+        obs = pauli_in.evolve(Clifford(trap), frame="s")
+
+        # Update parameters and observables
+        return obs, [bindings[k] for k in param_names]
+
     def make_pub_elements(
         self, num_traps: int = 10
     ) -> tuple[QuantumCircuit, list[Pauli], list[list[float]]]:
@@ -112,7 +150,7 @@ class Accreditation:
         pm = PassManager([ConvertCircuitToTrap()])
         trap_template = pm.run(self.target_circuit)
 
-        # Store the name of the parameters in the template circuit 
+        # Store the name of the parameters in the template circuit
         param_names = [p.name for p in trap_template.parameters]
 
         # Generate a list of the active qubits
@@ -124,35 +162,23 @@ class Accreditation:
                     active_qb_indices.append(qargs_map[qubit])
         active_qb_indices = set(active_qb_indices)
 
-        # Initialize lists to store the observables and the parameter set
-        observables = []
-        params_set = []
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            # Submit tasks to the executor
+            futures = [
+                executor.submit(
+                    self._make_obs_and_array,
+                    trap_template,
+                    param_names,
+                    active_qb_indices,
+                )
+                for _ in range(num_traps)
+            ]
 
-        # TODO: This can probably be parallelized if speedup is needed
-        for _ in range(num_traps):
-            # Create a copy of the template
-            trap = trap_template.copy()
+            # Collect the results
+            results = [future.result() for future in concurrent.futures.as_completed(futures)]
 
-            # Choose a triplet of U3 angles for every parametric and assign the parameters
-            angles = choices(CLIFFORD_U3_ANGLES, k=trap.num_parameters // 3)
-            bindings = {}
-            for idx, (lam, theta, phi) in angles:
-                bindings.update({f"p_{idx}[0]": theta, f"p_{idx}[1]": phi, f"p_{idx}[2]": lam})
-            trap.assign_parameters(bindings, inplace=True)
-
-            # Generate an n-qubit Pauli-Z by sampling I with prob. 1/4 and Z with prob. 3/4 for the active
-            # qubits
-            z = []
-            for idx in range(trap.num_qubits):
-                z.append(choices([True, False], [0.75, 0.25])[0] if idx in active_qb_indices else False)
-            pauli_in = Pauli((z, [False] * trap.num_qubits, [0] * trap.num_qubits))
-
-            # Evolve ``Pauli_in`` in the Schrödinger framework to get the output observable
-            obs = pauli_in.evolve(Clifford(trap), frame="s")
-
-            # Update parameters and observables
-            params_set.append([bindings[k] for k in param_names])
-            observables.append(obs)
+        observables = [r[0] for r in results]
+        params_set = [r[1] for r in results]
 
         # Return the template trap, the whole set of observables, and the whole set of parameters
         return trap_template, observables, params_set
